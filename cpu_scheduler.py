@@ -126,51 +126,103 @@ class CPUScheduler:
         return gantt, completed
 
     @staticmethod
-    def mlfq(processes, quantums):
+    def mlfq(processes, queue_configs):
+        """
+        Enhanced MLFQ with configurable algorithms per queue
+        queue_configs: list of dicts with 'algorithm' and 'quantum' keys
+        Example: [
+            {'algorithm': 'RR', 'quantum': 4},
+            {'algorithm': 'RR', 'quantum': 7},
+            {'algorithm': 'FCFS', 'quantum': None}
+        ]
+        """
         procs = sorted(deepcopy(processes), key=lambda x: x.arrival)
-        queues = [[], [], []]
+        num_queues = len(queue_configs)
+        queues = [[] for _ in range(num_queues)]
         time = 0
         gantt = []
         completed = []
         ready_procs = list(procs)
         
         while len(completed) < len(procs):
+            # Add newly arrived processes to queue 0
             while ready_procs and ready_procs[0].arrival <= time:
-                queues[0].append(ready_procs.pop(0))
+                new_proc = ready_procs.pop(0)
+                new_proc.level = 0
+                queues[0].append(new_proc)
             
+            # Find highest priority non-empty queue
             current = None
             q_idx = -1
-            for i in range(3):
+            for i in range(num_queues):
                 if queues[i]:
-                    current = queues[i].pop(0)
                     q_idx = i
                     break
             
-            if not current:
-                time = ready_procs[0].arrival if ready_procs else time + 1
+            if q_idx == -1:
+                # No process ready, advance time
+                if ready_procs:
+                    time = ready_procs[0].arrival
+                else:
+                    time += 1
                 continue
 
-            if current.response == -1:
-                current.response = time - current.arrival
+            config = queue_configs[q_idx]
+            algorithm = config['algorithm']
+            quantum = config.get('quantum', 1)
             
-            q = quantums[q_idx] if q_idx < 2 else current.remaining
-            exec_time = min(q, current.remaining)
-            gantt.append({'pid': current.pid, 'start': time, 'finish': time + exec_time})
-            
-            for _ in range(exec_time):
-                time += 1
-                while ready_procs and ready_procs[0].arrival <= time:
-                    queues[0].append(ready_procs.pop(0))
-            
-            current.remaining -= exec_time
-            if current.remaining > 0:
-                next_level = min(2, q_idx + 1)
-                queues[next_level].append(current)
-            else:
+            # Execute based on queue algorithm
+            if algorithm == 'FCFS':
+                # FCFS: run process to completion
+                current = queues[q_idx].pop(0)
+                if current.response == -1:
+                    current.response = time - current.arrival
+                
+                exec_time = current.remaining
+                gantt.append({'pid': current.pid, 'start': time, 'finish': time + exec_time})
+                
+                for _ in range(exec_time):
+                    time += 1
+                    while ready_procs and ready_procs[0].arrival <= time:
+                        new_proc = ready_procs.pop(0)
+                        new_proc.level = 0
+                        queues[0].append(new_proc)
+                
+                current.remaining = 0
                 current.completion = time
                 current.turnaround = time - current.arrival
                 current.waiting = current.turnaround - current.burst
                 completed.append(current)
+                
+            elif algorithm == 'RR':
+                # Round Robin: run for quantum or until completion
+                current = queues[q_idx].pop(0)
+                if current.response == -1:
+                    current.response = time - current.arrival
+                
+                exec_time = min(quantum, current.remaining)
+                gantt.append({'pid': current.pid, 'start': time, 'finish': time + exec_time})
+                
+                for _ in range(exec_time):
+                    time += 1
+                    while ready_procs and ready_procs[0].arrival <= time:
+                        new_proc = ready_procs.pop(0)
+                        new_proc.level = 0
+                        queues[0].append(new_proc)
+                
+                current.remaining -= exec_time
+                
+                if current.remaining > 0:
+                    # Move to next level or stay at last level
+                    next_level = min(num_queues - 1, q_idx + 1)
+                    current.level = next_level
+                    queues[next_level].append(current)
+                else:
+                    current.completion = time
+                    current.turnaround = time - current.arrival
+                    current.waiting = current.turnaround - current.burst
+                    completed.append(current)
+        
         return gantt, completed
 
 class ProcessInputDialog:
@@ -244,6 +296,101 @@ class ProcessInputDialog:
     def cancel_clicked(self):
         self.dialog.destroy()
 
+class MLFQConfigDialog:
+    def __init__(self, parent):
+        self.result = None
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("MLFQ Configuration")
+        self.dialog.geometry("450x400")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        # Center the dialog
+        self.dialog.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - (self.dialog.winfo_width() // 2)
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - (self.dialog.winfo_height() // 2)
+        self.dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(self.dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(main_frame, text="Configure MLFQ Queues", 
+                 font=('Arial', 12, 'bold')).pack(pady=(0, 10))
+        
+        ttk.Label(main_frame, text="Set algorithm and quantum for each queue level:",
+                 font=('Arial', 9)).pack(pady=(0, 15))
+        
+        # Queue configurations
+        self.queue_configs = []
+        
+        # Queue 1 (Q1)
+        self.create_queue_config(main_frame, "Queue 1 (Highest Priority)", 0)
+        
+        # Queue 2 (Q2)
+        self.create_queue_config(main_frame, "Queue 2", 1)
+        
+        # Queue 3 (Q3)
+        self.create_queue_config(main_frame, "Queue 3 (Lowest Priority)", 2)
+        
+        # Buttons
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="OK", command=self.ok_clicked, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.cancel_clicked, width=10).pack(side=tk.LEFT, padx=5)
+        
+        self.dialog.bind('<Return>', lambda e: self.ok_clicked())
+        self.dialog.bind('<Escape>', lambda e: self.cancel_clicked())
+    
+    def create_queue_config(self, parent, label, index):
+        frame = ttk.LabelFrame(parent, text=label, padding="10")
+        frame.pack(fill=tk.X, pady=5)
+        
+        # Algorithm selection
+        algo_frame = ttk.Frame(frame)
+        algo_frame.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(algo_frame, text="Algorithm:", width=12).pack(side=tk.LEFT)
+        algo_var = tk.StringVar(value='RR' if index < 2 else 'FCFS')
+        algo_combo = ttk.Combobox(algo_frame, textvariable=algo_var, 
+                                  values=['RR', 'FCFS'], state='readonly', width=10)
+        algo_combo.pack(side=tk.LEFT, padx=5)
+        
+        # Quantum (only for RR)
+        quantum_frame = ttk.Frame(frame)
+        quantum_frame.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(quantum_frame, text="Quantum:", width=12).pack(side=tk.LEFT)
+        quantum_var = tk.IntVar(value=4 if index == 0 else (7 if index == 1 else 1))
+        quantum_spin = ttk.Spinbox(quantum_frame, from_=1, to=20, 
+                                   textvariable=quantum_var, width=8)
+        quantum_spin.pack(side=tk.LEFT, padx=5)
+        
+        quantum_label = ttk.Label(quantum_frame, text="(used for RR)", 
+                                 font=('Arial', 8), foreground='gray')
+        quantum_label.pack(side=tk.LEFT, padx=5)
+        
+        self.queue_configs.append({
+            'algo_var': algo_var,
+            'quantum_var': quantum_var
+        })
+    
+    def ok_clicked(self):
+        configs = []
+        for i, config in enumerate(self.queue_configs):
+            algorithm = config['algo_var'].get()
+            quantum = config['quantum_var'].get()
+            
+            configs.append({
+                'algorithm': algorithm,
+                'quantum': quantum
+            })
+        
+        self.result = configs
+        self.dialog.destroy()
+    
+    def cancel_clicked(self):
+        self.dialog.destroy()
+
 class CPUSchedulerGUI:
     def __init__(self, root):
         self.root = root
@@ -256,6 +403,14 @@ class CPUSchedulerGUI:
             Process('P4', 3, 6, 3)
         ]
         self.current_figure = None
+        
+        # Default MLFQ configuration
+        self.mlfq_configs = [
+            {'algorithm': 'RR', 'quantum': 4},
+            {'algorithm': 'RR', 'quantum': 7},
+            {'algorithm': 'FCFS', 'quantum': 1}
+        ]
+        
         self.setup_ui()
         
         # Bind window close event
@@ -267,7 +422,8 @@ class CPUSchedulerGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        ttk.Label(main_frame, text="🧠 CPU Scheduling Simulator", font=('Arial', 20, 'bold')).grid(row=0, column=0, pady=10)
+        ttk.Label(main_frame, text="🧠 CPU Scheduling Simulator", 
+                 font=('Arial', 20, 'bold')).grid(row=0, column=0, pady=10)
         
         top_frame = ttk.Frame(main_frame)
         top_frame.grid(row=1, column=0, sticky="ew", pady=10)
@@ -306,21 +462,56 @@ class CPUSchedulerGUI:
         cf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5)
 
         self.algo_var = tk.StringVar(value='FCFS')
-        algos = [('FCFS', 'FCFS'), ('SJF', 'SJF'), ('SRT', 'SRT'), ('Round Robin', 'RR'), ('MLFQ', 'MLFQ')]
+        algos = [('FCFS', 'FCFS'), ('SJF', 'SJF'), ('SRT', 'SRT'), 
+                ('Round Robin', 'RR'), ('MLFQ', 'MLFQ')]
         for t, v in algos:
-            ttk.Radiobutton(cf, text=t, variable=self.algo_var, value=v, command=self.toggle_params).pack(anchor=tk.W)
+            ttk.Radiobutton(cf, text=t, variable=self.algo_var, value=v, 
+                          command=self.toggle_params).pack(anchor=tk.W)
 
+        # RR Quantum frame
         self.q_frame = ttk.Frame(cf)
         ttk.Label(self.q_frame, text="Quantum:").pack(side=tk.LEFT)
         self.q_var = tk.IntVar(value=2)
         ttk.Spinbox(self.q_frame, from_=1, to=20, textvariable=self.q_var, width=5).pack(side=tk.LEFT)
 
+        # MLFQ Config button frame
+        self.mlfq_frame = ttk.Frame(cf)
+        ttk.Button(self.mlfq_frame, text="⚙️ Configure MLFQ", 
+                  command=self.configure_mlfq).pack(pady=5)
+        self.mlfq_info_label = ttk.Label(self.mlfq_frame, text="", 
+                                         font=('Arial', 8), foreground='blue')
+        self.mlfq_info_label.pack()
+        self.update_mlfq_info()
+
         ttk.Button(cf, text="▶ Run Simulation", command=self.run_simulation).pack(fill=tk.X, pady=10)
 
     def toggle_params(self):
         self.q_frame.pack_forget()
-        if self.algo_var.get() in ['RR', 'MLFQ']: 
+        self.mlfq_frame.pack_forget()
+        
+        if self.algo_var.get() == 'RR':
             self.q_frame.pack(pady=5)
+        elif self.algo_var.get() == 'MLFQ':
+            self.mlfq_frame.pack(pady=5)
+
+    def configure_mlfq(self):
+        dialog = MLFQConfigDialog(self.root)
+        self.root.wait_window(dialog.dialog)
+        
+        if dialog.result:
+            self.mlfq_configs = dialog.result
+            self.update_mlfq_info()
+    
+    def update_mlfq_info(self):
+        info_text = "Q1: {} ({}), Q2: {} ({}), Q3: {} ({})".format(
+            self.mlfq_configs[0]['algorithm'],
+            f"q={self.mlfq_configs[0]['quantum']}" if self.mlfq_configs[0]['algorithm'] == 'RR' else 'N/A',
+            self.mlfq_configs[1]['algorithm'],
+            f"q={self.mlfq_configs[1]['quantum']}" if self.mlfq_configs[1]['algorithm'] == 'RR' else 'N/A',
+            self.mlfq_configs[2]['algorithm'],
+            f"q={self.mlfq_configs[2]['quantum']}" if self.mlfq_configs[2]['algorithm'] == 'RR' else 'N/A'
+        )
+        self.mlfq_info_label.config(text=info_text)
 
     def refresh_process_table(self):
         for i in self.tree.get_children(): 
@@ -395,10 +586,10 @@ class CPUSchedulerGUI:
         elif algo == 'RR': 
             g, r = s.round_robin(self.processes, self.q_var.get())
         elif algo == 'MLFQ': 
-            g, r = s.mlfq(self.processes, [self.q_var.get(), self.q_var.get()*2, 999])
-        self.display_results(g, r)
+            g, r = s.mlfq(self.processes, self.mlfq_configs)
+        self.display_results(g, r, algo)
 
-    def display_results(self, gantt, results):
+    def display_results(self, gantt, results, algo_name):
         # Close any existing figure
         if self.current_figure:
             plt.close(self.current_figure)
@@ -430,7 +621,16 @@ class CPUSchedulerGUI:
         
         ax.set_yticks([])
         ax.set_xlabel("Time", fontsize=12)
-        ax.set_title("Gantt Chart", fontsize=14, fontweight='bold')
+        
+        # Enhanced title for MLFQ
+        if algo_name == 'MLFQ':
+            title = f"Gantt Chart - MLFQ (Q1: {self.mlfq_configs[0]['algorithm']}({self.mlfq_configs[0]['quantum']}), " \
+                   f"Q2: {self.mlfq_configs[1]['algorithm']}({self.mlfq_configs[1]['quantum']}), " \
+                   f"Q3: {self.mlfq_configs[2]['algorithm']})"
+        else:
+            title = f"Gantt Chart - {algo_name}"
+        
+        ax.set_title(title, fontsize=14, fontweight='bold')
         ax.grid(axis='x', alpha=0.3)
         plt.tight_layout()
         
